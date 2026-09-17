@@ -224,8 +224,8 @@ git remote add origin <url>	添加一个远程仓库并命名为 origin
 git push origin <branch>	将本地分支推送到远程仓库
 git pull origin <branch>	从远程仓库拉取最新内容并合并到本地
 git push -u origin <branch>	首次推送时，将本地分支与远程分支关联起来
-git restore <file>	撤销工作区中对文件的修改
-git restore --staged <file>	将文件从暂存区移出（撤销 git add）
+#git restore <file>	撤销工作区中对文件的修改
+#git restore --staged <file>	将文件从暂存区移出（撤销 git add）
 git reset --hard <版本号>	回退到指定提交，会丢弃所有未提交的修改
 git revert <版本号>	创建一个新的提交来抵消指定提交的修改（更安全）
 
