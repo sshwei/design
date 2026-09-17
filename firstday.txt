@@ -1,0 +1,243 @@
+################################################
+################################################
+安装docker  
+1.cat /etc/os-release 确定系统版本
+
+2.系统准备与清理
+移除可能已存在的旧版或冲突的 Docker 包，避免版本混乱。
+sudo apt remove $(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc 2>/dev/null | cut -f1)
+然后更新系统并安装必要依赖：
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y ca-certificates curl
+
+3：配置 Docker 官方 APT 仓库
+# 1. 创建 keyrings 目录
+sudo install -m 0755 -d /etc/apt/keyrings
+
+# 2. 下载 GPG 公钥并 dearmor
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# 3. 加读权限
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+# 4. 添加 Docker 软件源
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 5. 更新并安装
+安装完整的 Docker 组件，包括引擎、CLI、容器运行时以及 Compose 和 Buildx 插件
+sudo apt-get update
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+#6.安装后，验证服务状态并设置开机自启：
+sudo systemctl status docker
+sudo systemctl enable docker
+
+4.生产环境关键配置
+#1. 日志限制（防止磁盘被占满） 镜像加速（可选，国内环境）
+Docker 默认的 json-file 日志驱动没有大小限制，必须配置轮转。
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "20m",
+    "max-file": "3"
+  },
+  "registry-mirrors": ["https://docker.m.daocloud.io"]
+}
+EOF
+验证写入是否生效
+docker info | grep -i -A 5 "Registry Mirrors"
+sudo systemctl restart docker
+#配置后需重启 Docker 服务。
+
+#守护进程资源限制（可选）
+为防止 Docker 守护进程本身消耗过多系统资源，可通过 systemd 覆盖文件进行限制
+sudo mkdir -p /etc/systemd/system/docker.service.d
+sudo tee /etc/systemd/system/docker.service.d/override.conf <<EOF
+[Service]
+CPUQuota=200%
+MemoryLimit=2G
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart docker
+这会将 Docker 守护进程的 CPU 限制在 2 个核心，内存限制在 2GB，具体数值需根据服务器规格调整。
+
+5.用户与权限管理
+生产环境中不要将普通用户加入 docker 组。 docker 组的权限等同于 root，因为组成员可以启动挂载了宿主机根目录的容器。日常操作应始终使用 sudo，或通过配置 Rootless 模式让 Docker 守护进程本身以非 root 身份运行，从根本上降低风险。
+
+6.最小化验证
+sudo docker run --rm hello-world
+
+##############################################################################################################################
+安装UV
+最推荐的方式，会自动安装最新版 UV 到用户目录，无需 sudo，也不影响系统 Python 环境。
+1.执行安装脚本：确保 curl 已安装，然后运行：
+curl -LsSf https://astral.sh/uv/install.sh | sh
+该脚本会下载 UV 并安装到 ~/.local/bin 目录。
+2.刷新环境变量：安装后需要让当前 shell 识别新命令：
+source ~/.bashrc
+3.验证安装：
+uv --version 如下：
+root@hongwei:~# uv --version
+uv 0.12.15 (x86_64-unknown-linux-gnu)
+
+在 Docker 中使用 UV
+UV 官方提供了预装了 UV 的 Docker 镜像，你可以直接拉取使用
+docker run --rm -it ghcr.io/astral-sh/uv:debian uv --help
+如果你在自己的 Dockerfile 中构建镜像，可以从官方镜像中复制 UV 二进制文件，这是一种非常干净的集成方式：
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+镜像站配置
+全局配置文件
+1.创建配置目录（如果不存在）
+mkdir -p ~/.config/uv
+2.创建或编辑 ~/.config/uv/uv.toml 文件，写入以下内容（以清华源为例）
+[[index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+UV使用
+UV 的核心是以项目为中心的工作流，它会自动管理虚拟环境、依赖和 Python 版本。
+初始化项目
+1.# 创建新项目目录并初始化
+uv init my-project
+cd my-project
+# 在当前目录初始化
+uv init
+
+2. 项目结构解析
+my-project/
+├── .venv/            # 虚拟环境（首次运行命令时自动创建）
+├── .python-version   # 项目的默认 Python 版本
+├── pyproject.toml    # 项目元数据与依赖声明
+├── uv.lock           # 锁定依赖的精确版本（应纳入版本控制）
+└── main.py           # 示例入口文件
+
+3. 添加/移除依赖
+# 添加运行时依赖
+uv add requests
+
+# 添加开发依赖（如测试工具）
+uv add --dev pytest
+
+# 移除依赖
+uv remove requests
+uv add 会自动更新 pyproject.toml、uv.lock 并安装到虚拟环境。
+
+4.同步环境
+# 根据 uv.lock 同步环境（推荐，确保环境一致性）
+uv sync
+# 严格同步，锁定文件过期则报错
+uv sync --frozen
+uv sync 会根据锁文件安装所有依赖，并移除多余包，确保环境与锁文件完全一致。
+
+5. 运行命令
+# 在项目环境中运行 Python 脚本
+uv run python main.py
+uv remove 包名
+uv python install cpython3.12  安装指定版本的python
+uv python pin 指定项目中的python版本
+uv python list 列出已安装的python版本
+uv self update 跟新uv
+uv uv self uninstall
+uv tool install ruff  安装uv配套工具
+ruff check main.py
+
+# 运行测试
+uv run pytest
+
+# 运行项目内任意命令
+uv run <command>
+
+##############################################################################################################################
+安装git
+# 1. 更新本地软件包索引
+sudo apt update
+# 2. 安装 Git
+sudo apt install git -y
+git --version
+######
+初始配置（重要）
+# 设置你的用户名（会出现在每次提交的作者信息中）
+git config --global user.name "你的用户名"
+
+# 设置你的邮箱（建议与 GitHub/GitLab 账户邮箱一致）
+git config --global user.email "your@email.com"
+
+# 推荐：设置默认分支名称为 main
+git config --global init.defaultBranch main
+
+# 推荐：启用彩色输出，让命令行更易读
+git config --global color.ui auto
+配置完成后，可以用 git config --global --list 来查看所有全局配置。
+
+#######
+配置 SSH 密钥（推荐）
+
+为了安全地连接 GitHub、GitLab 等远程仓库，而无需每次输入密码，建议配置 SSH 密钥
+生成 SSH 密钥：
+ssh-keygen -t ed25519 -C "your@email.com"
+按提示操作，可以直接按回车使用默认保存路径 (~/.ssh/id_ed25519)，并建议设置一个密码短语以增强安全性。
+
+启动 SSH Agent 并添加密钥：
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+
+复制公钥：
+cat ~/.ssh/id_ed25519.pub
+复制输出的全部内容，然后将其添加到你的 GitHub（Settings > SSH and GPG keys）或其他代码托管平台的 SSH 密钥设置中。
+
+测试连接
+ssh -T git@github.com
+如果配置正确，你会看到一条包含你用户名的欢迎消息。
+##########
+
+Git 常用操作命令速查
+命令	作用
+git init	在当前目录初始化一个新的 Git 仓库
+git clone <url>	克隆远程仓库到本地
+git status	查看工作区和暂存区的文件状态
+git add <file>	将指定文件的修改添加到暂存区
+git add .	将当前目录下所有修改添加到暂存区
+git commit -m "提交说明"	将暂存区的内容提交到本地仓库
+git log --oneline	以简洁的一行格式查看提交历史
+git reflog 查看之前使用过的命令
+git checkout -- 文件 撤销缓冲区改动，丢弃改动
+git reset HEAD 文件名 撤销工作区文件
+git diff HEAD --文件名 对比文件的不同
+git branch	列出所有本地分支
+git branch <branch-name>	创建一个新分支（但不切换）
+git checkout <branch-name>	切换到指定分支
+git checkout -b <branch-name>	创建并立即切换到新分支
+git merge <branch-name>	将指定分支合并到当前分支
+git merge --no-ff -m "禁用fast-forword" 
+git branch -d <branch-name>	删除一个已经合并的分支
+git stash  先暂存工作现场
+git stash  pop 恢复工作现场
+git remote -v	查看当前关联的远程仓库地址
+git remote add origin <url>	添加一个远程仓库并命名为 origin
+git push origin <branch>	将本地分支推送到远程仓库
+git pull origin <branch>	从远程仓库拉取最新内容并合并到本地
+git push -u origin <branch>	首次推送时，将本地分支与远程分支关联起来
+git restore <file>	撤销工作区中对文件的修改
+git restore --staged <file>	将文件从暂存区移出（撤销 git add）
+git reset --hard <版本号>	回退到指定提交，会丢弃所有未提交的修改
+git revert <版本号>	创建一个新的提交来抵消指定提交的修改（更安全）
+
+善用别名：可以在 ~/.bashrc 文件中设置常用命令的别名，提高效率。例如
+alias gs='git status'
+alias gp='git push'
+alias gl='git log --oneline'
+修改后执行 source ~/.bashrc 使其生效。
+
+管理多个 SSH 密钥：如果你有多个 Git 账户（如工作、个人），可以通过 ~/.ssh/config 文件来为不同账户指定不同的密钥。
+
+安装 Git 文档：如果需要查阅官方手册，可以安装 git-doc 包：
+sudo apt install git-doc -y
+
+##############################################################################################################################
